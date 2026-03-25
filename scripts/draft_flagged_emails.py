@@ -85,7 +85,7 @@ PODS = {
             "GXG","ARGT",
             # Thematic Disruptive
             "AIQ","BKCH","BOTZ","BUG","CLOU","DRIV","FINX","HERO","SNSR",
-            "SOCL","VPN","ZAP","GXDW","CHPX",
+            "SOCL","VPN","ZAP","GXDW","CHPX","EART",
             # Thematic Physical Environment
             "AQWA","CTEC","HYDR","KROP","PAVE","RNRG","SHLD","CEFA","IPAV",
             # Broadmarket
@@ -182,6 +182,8 @@ _CASH_COLS = {
 }
 
 _CASH_WIDTH = "min-width:90px;width:90px;"
+_RANK_COLS  = {"RANK_1", "RANK_2", "RANK_3"}
+_RANK_WIDTH = "min-width:110px;width:110px;"
 
 _ATTR_BPS_COLS = {
     "CASH DRAG",
@@ -356,10 +358,14 @@ def _html_table(headers: list, rows: list, keep_cols: list = None, uniform_width
             "text-align:left;"
         )
 
-    total_width = len(table_headers) * normal_width
+    def _col_width(h):
+        h_up = str(h).strip().upper() if not isinstance(h, datetime) else ""
+        return 110 if h_up in _RANK_COLS else normal_width
+
+    total_width = sum(_col_width(h) for h in table_headers)
 
     th = "".join(
-        f"<th width='{normal_width}' style='{_th_style(h)}'>"
+        f"<th width='{_col_width(h)}' style='{_th_style(h)}'>"
         f"{h.strftime('%m/%d/%Y') if isinstance(h, datetime) else (h or '')}"
         f"</th>"
         for h in table_headers
@@ -370,7 +376,7 @@ def _html_table(headers: list, rows: list, keep_cols: list = None, uniform_width
         bg = "#ffffff" if i % 2 == 0 else "#f5f5f5"
 
         tds = "".join(
-            f"<td width='{normal_width}' style='{_td_style(table_headers[j], v, bg)}'>{_fmt(v, table_headers[j])}</td>"
+            f"<td width='{_col_width(table_headers[j])}' style='{_td_style(table_headers[j], v, bg)}'>{_fmt(v, table_headers[j])}</td>"
             for j, v in enumerate(row)
         )
         body += f"<tr>{tds}</tr>"
@@ -448,19 +454,23 @@ def read_port_review():
         wb_xw.close()
         app.quit()
 
-    headers = data[0]
-    buckets = {pod: [] for pod in PODS}
+    headers  = data[0]
+    buckets  = {pod: [] for pod in PODS}
+    unflagged_vanessa = []
 
     for i, row_vals in enumerate(data[1:]):
         ticker = row_vals[PORT_TICKER_COL - 1]
         if not ticker:
             continue
+        pod = _get_pod(str(ticker))
         if _excel_color_is_red(flag_colors[i]):
-            pod = _get_pod(str(ticker))
             if pod:
                 buckets[pod].append(row_vals)
+        else:
+            if pod == "vanessa":
+                unflagged_vanessa.append(row_vals)
 
-    return headers, buckets
+    return headers, buckets, unflagged_vanessa
 
 
 def read_td_report():
@@ -565,9 +575,10 @@ def read_attribution():
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
-def _port_review_cols(headers: list) -> list:
+def _port_review_cols(headers: list, include_ranks: bool = False) -> list:
     """
-    Return indices for the selected Port Review columns, including NET_CASH_FUTURES_ADJ.
+    Return indices for the selected Port Review columns.
+    include_ranks: if True, also include RANK_1/2/3 (Vanessa only).
     """
     want = {
         "FUND_TICKER",
@@ -581,6 +592,8 @@ def _port_review_cols(headers: list) -> list:
         "NET_CASH",
         "NET_CASH_FUTURES_ADJ",
     }
+    if include_ranks:
+        want |= {"RANK_1", "RANK_2", "RANK_3"}
     return [i for i, h in enumerate(headers) if str(h).strip().upper() in want]
 
 
@@ -600,12 +613,13 @@ def _td_cols(headers: list) -> list:
 
 
 def main():
-    port_headers, port_buckets = read_port_review()
+    port_headers, port_buckets, vanessa_unflagged = read_port_review()
     td_headers, td_buckets = read_td_report()
     attr_headers, attr_lookup = read_attribution()
     # ca_headers, ca_buckets = read_corp_actions()
 
-    port_cols = _port_review_cols(port_headers)
+    port_cols        = _port_review_cols(port_headers, include_ranks=False)
+    port_cols_ranked = _port_review_cols(port_headers, include_ranks=True)
     td_cols = _td_cols(td_headers)
 
     td_date_headers = [td_headers[i] for i in td_cols]
@@ -646,15 +660,23 @@ def main():
         td_rows = td_buckets[pod_name]
         ca_rows = []
 
-        if not port_rows and not td_rows and not ca_rows:
+        is_vanessa = pod_name == "vanessa"
+        if not port_rows and not td_rows and not ca_rows and not (is_vanessa and vanessa_unflagged):
             continue
 
         sections = []
 
         if port_rows:
-            table = _html_table(port_headers, port_rows, keep_cols=port_cols)
+            cols = port_cols_ranked if pod_name == "vanessa" else port_cols
+            table = _html_table(port_headers, port_rows, keep_cols=cols)
             sections.append(
-                _section_header("Portfolio Review — Flagged Funds (NET Cash)") + table
+                _section_header("Portfolio Review \u2014 Flagged Funds (NET Cash)") + table
+            )
+
+        if pod_name == "vanessa" and vanessa_unflagged:
+            table = _html_table(port_headers, vanessa_unflagged, keep_cols=port_cols_ranked)
+            sections.append(
+                _section_header("Portfolio Review \u2014 All Funds") + table
             )
 
         if td_rows:
